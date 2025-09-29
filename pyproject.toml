@@ -3,19 +3,23 @@ name = "translation-api"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.11,<3.12"
 dependencies = [
     "fastapi>=0.117.1",
-    "numpy>=2.3.3",
+    "numpy>=1.23,<2",
     "protobuf>=6.32.1",
     "python-multipart>=0.0.20",
     "scipy>=1.16.2",
     "scipy-stubs>=1.16.2.0",
     "sentencepiece>=0.2.1",
-    "torchaudio>=2.8.0",
+    "simuleval>=0.3.0",
+    "torch==2.2.2",
+    "torchaudio==2.2.2",
     "transformers",
+    "seamless_communication",
     "uvicorn[standard]>=0.37.0",
 ]
 
 [tool.uv.sources]
 transformers = { git = "https://github.com/huggingface/transformers.git" }
+seamless_communication = { git = "https://github.com/facebookresearch/seamless_communication.git" }
