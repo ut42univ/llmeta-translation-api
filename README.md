@@ -8,6 +8,12 @@ SeamlessM4T v2 を利用した FastAPI バックエンドです。テキスト�
 uv sync
 ```
 
+Mac で `fairseq2` 系のライブラリを利用するために `libsndfile` が必要です。未インストールの場合は Homebrew などで追加してください。
+
+```bash
+brew install libsndfile
+```
+
 モデルの初回ロード時には Hugging Face から数 GB のモデルがダウンロードされます。十分なディスク容量とネットワーク帯域を確保してください。
 
 ## サーバー起動
@@ -17,6 +23,8 @@ uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 起動後、`http://localhost:8000/docs` で OpenAPI ドキュメントを確認できます。
+
+フロントエンドのデモページを確認する場合は `http://localhost:8000/demo` にアクセスしてください。
 
 ## エンドポイント概要
 
@@ -67,6 +75,51 @@ curl -X POST \
 	-F "return_audio=true" \
 	http://localhost:8000/translate/audio
 ```
+
+## リアルタイム音声ストリーミング
+
+WebSocket を用いたリアルタイム通訳エンドポイントを追加しています。クライアントは 16-bit PCM (リトルエンディアン) の音声チャンクをバイナリで送信し、翻訳結果のテキストと音声を逐次受信できます。
+
+- エンドポイント: `ws://<host>:<port>/ws/translate`
+- 音声は任意のサンプルレートで送って構いません（内部で 16 kHz にリサンプルされます）。
+- 最初に JSON メッセージで構成情報を送信し、その後にバイナリ音声チャンクを連続送信します。
+
+### 初期メッセージ例
+
+```jsonc
+{
+  "type": "config",
+  "src_lang": "eng", // ISO 639-3 言語コード
+  "tgt_lang": "jpn",
+  "sample_rate": 48000, // クライアント側オーディオのサンプルレート
+  "return_text": true, // 文字起こしを受信するか
+  "streaming_audio": true, // SeamlessStreaming で逐次音声を受信するか
+  "expressive_audio": false // SeamlessExpressive を利用するか（gated モデルが必要）
+}
+```
+
+以降は `Uint8Array` もしくは `ArrayBuffer` で PCM16 の音声データを送信してください。発話が終わったタイミングで JSON メッセージ `{"type": "end"}` を送ると、残りのバッファがフラッシュされてセッションが終了します。
+
+### サーバーからのメッセージ種別
+
+| type               | 説明                                                                             |
+| ------------------ | -------------------------------------------------------------------------------- |
+| `ready`            | 準備完了。`target_sample_rate` と `expressive_available` が含まれます。          |
+| `partial_text`     | 部分的な翻訳テキスト。`final=true` の場合は発話が確定したことを表します。        |
+| `streaming_audio`  | SeamlessStreaming によるリアルタイム音声。`audio_base64` は PCM16 を Base64 化。 |
+| `expressive_audio` | SeamlessExpressive による音声（利用可能な場合のみ）。                            |
+| `error`            | エラー内容。                                                                     |
+| `done`             | セッション終了。                                                                 |
+
+## SeamlessExpressive を利用する場合
+
+SeamlessExpressive のモデルと vocoder は gated asset のため、事前に Meta のライセンスと Hugging Face 上のアクセス申請が必要です。取得したモデルファイルを任意のディレクトリに配置し、環境変数 `SEAMLESS_EXPRESSIVE_DIR` でパスを指定してください。
+
+```bash
+export SEAMLESS_EXPRESSIVE_DIR=/path/to/seamless_expressive_assets
+```
+
+上記が設定されていない場合は Expressive 音声の要求が拒否され、テキストおよび通常のストリーミング音声のみが利用できます。
 
 ## 言語コードについて
 
