@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import os
 from argparse import ArgumentParser
 from dataclasses import dataclass
 from pathlib import Path
@@ -77,6 +78,7 @@ class PipelineDescriptor:
     task: str
     default_kwargs: Dict[str, object]
     requires_expressive_assets: bool = False
+    cli_args: Tuple[str, ...] = ()
 
 
 class PipelineResource:
@@ -129,6 +131,27 @@ class PipelineSession:
             self.states = self.resource.agent.build_states()
 
 
+def _resolve_default_min_unit_chunk_size() -> int:
+    env_value = os.getenv("SEAMLESS_MIN_UNIT_CHUNK_SIZE")
+    if env_value:
+        try:
+            candidate = int(env_value)
+            if candidate > 0:
+                return candidate
+            logger.warning(
+                "SEAMLESS_MIN_UNIT_CHUNK_SIZE must be positive. Using fallback 10."
+            )
+        except ValueError:
+            logger.warning(
+                "SEAMLESS_MIN_UNIT_CHUNK_SIZE=%s is not an integer. Using fallback 10.",
+                env_value,
+            )
+    return 10
+
+
+DEFAULT_MIN_UNIT_CHUNK_SIZE = _resolve_default_min_unit_chunk_size()
+
+
 PIPELINES: Dict[str, PipelineDescriptor] = {
     "text": PipelineDescriptor(
         key="text",
@@ -141,6 +164,7 @@ PIPELINES: Dict[str, PipelineDescriptor] = {
         agent_cls=SeamlessStreamingS2STAgent,
         task="s2st",
         default_kwargs={"vocoder_name": "vocoder_v2"},
+        cli_args=("--min-unit-chunk-size", str(DEFAULT_MIN_UNIT_CHUNK_SIZE)),
     ),
     "expressive": PipelineDescriptor(
         key="expressive",
@@ -148,6 +172,7 @@ PIPELINES: Dict[str, PipelineDescriptor] = {
         task="s2st",
         default_kwargs={"vocoder_name": "vocoder_pretssel"},
         requires_expressive_assets=True,
+        cli_args=("--min-unit-chunk-size", str(DEFAULT_MIN_UNIT_CHUNK_SIZE)),
     ),
 }
 
@@ -354,7 +379,20 @@ class StreamingService:
 
         parser = ArgumentParser(add_help=False)
         descriptor.agent_cls.add_args(parser)
-        args = parser.parse_args([])
+        cli_args = list(descriptor.cli_args)
+        try:
+            args = parser.parse_args(cli_args)
+        except SystemExit as exc:  # pragma: no cover - defensive path
+            required_flags = [
+                action.option_strings[0]
+                for action in parser._actions
+                if getattr(action, "required", False) and action.option_strings
+            ]
+            missing_msg = (
+                f"Missing required arguments {required_flags} when building pipeline "
+                f"'{descriptor.key}'."
+            )
+            raise StreamingServiceError(missing_msg) from exc
         args.task = descriptor.task
         args.device = self.device
         args.fp16 = bool(self.dtype == torch.float16)
