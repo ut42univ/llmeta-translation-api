@@ -1,14 +1,30 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import json
+import logging
+import os
+from pathlib import Path
 from typing import Optional
 
 import scipy.io.wavfile as wavfile
 import torchaudio
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import RedirectResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from services.seamless import SeamlessTranslator, TranslationResult
+from services.streaming import StreamingConfig, StreamingService, StreamingServiceError
 
 
 class TextTranslationRequest(BaseModel):
@@ -37,11 +53,25 @@ class TranslationResponse(BaseModel):
     target_lang: str
 
 
+logger = logging.getLogger(__name__)
+
+
 app = FastAPI(
     title="Seamless Simultaneous Translation API",
     description="FastAPI backend exposing the SeamlessM4Tv2 model for text and speech translation.",
     version="0.1.0",
 )
+
+STATIC_DIR = Path(__file__).resolve().parent / "static"
+if STATIC_DIR.exists():
+    app.mount("/demo", StaticFiles(directory=STATIC_DIR, html=True), name="demo")
+
+
+@app.get("/", include_in_schema=False)
+async def root():
+    if STATIC_DIR.exists():
+        return RedirectResponse(url="/demo")
+    return {"message": "Seamless translation API is running. Visit /docs for usage."}
 
 
 def get_translator() -> SeamlessTranslator:
@@ -74,15 +104,72 @@ def build_response(result: TranslationResult, target_lang: str) -> TranslationRe
 
 @app.on_event("startup")
 async def load_model() -> None:
-    app.state.translator = SeamlessTranslator()
+    loop = asyncio.get_running_loop()
+
+    translator_future = loop.run_in_executor(None, SeamlessTranslator)
+
+    expressive_dir_value = os.getenv("SEAMLESS_EXPRESSIVE_DIR")
+    expressive_path: Optional[Path] = None
+    if expressive_dir_value:
+        candidate = Path(expressive_dir_value).expanduser()
+        if candidate.exists():
+            expressive_path = candidate
+        else:
+            logger.warning(
+                "SEAMLESS_EXPRESSIVE_DIR=%s does not exist; expressive streaming disabled.",
+                candidate,
+            )
+
+    def build_streaming() -> StreamingService:
+        return StreamingService(expressive_asset_dir=expressive_path)
+
+    streaming_future = loop.run_in_executor(None, build_streaming)
+
+    translator_result, streaming_result = await asyncio.gather(
+        translator_future, streaming_future, return_exceptions=True
+    )
+
+    if isinstance(translator_result, Exception):
+        raise translator_result
+
+    app.state.translator = translator_result
+
+    if isinstance(streaming_result, Exception):
+        logger.warning("Streaming service initialization failed: %s", streaming_result)
+        app.state.streaming = None
+    else:
+        app.state.streaming = streaming_result
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
+async def health() -> dict[str, object]:
     translator = getattr(app.state, "translator", None)
     status = "ready" if translator is not None else "loading"
     device = translator.device if translator is not None else "initializing"
-    return {"status": status, "device": device}
+    streaming_service: Optional[StreamingService] = getattr(
+        app.state, "streaming", None
+    )
+    streaming_status = "ready" if streaming_service is not None else "loading"
+    streaming_device = (
+        streaming_service.device if streaming_service is not None else "initializing"
+    )
+    expressive_available = (
+        streaming_service.expressive_available
+        if streaming_service is not None
+        else False
+    )
+    return {
+        "status": status,
+        "device": device,
+        "streaming": streaming_status,
+        "streaming_device": streaming_device,
+        "expressive_available": expressive_available,
+        "target_sample_rate": (
+            streaming_service.target_sample_rate
+            if streaming_service is not None
+            else None
+        ),
+    }
 
 
 @app.post("/translate/text", response_model=TranslationResponse)
@@ -141,6 +228,139 @@ async def translate_audio(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     return build_response(result, target_lang=tgt_lang)
+
+
+@app.websocket("/ws/translate")
+async def websocket_translate(websocket: WebSocket) -> None:
+    await websocket.accept()
+    streaming_service: Optional[StreamingService] = getattr(
+        app.state, "streaming", None
+    )
+    if streaming_service is None:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "message": "Streaming service is not ready. Please retry shortly.",
+            }
+        )
+        await websocket.close(code=1013)
+        return
+
+    session = None
+
+    try:
+        while True:
+            message = await websocket.receive()
+            message_type = message.get("type")
+            if message_type == "websocket.disconnect":
+                break
+
+            text_payload = message.get("text")
+            binary_payload = message.get("bytes")
+
+            if text_payload is not None:
+                try:
+                    data = json.loads(text_payload)
+                except json.JSONDecodeError:
+                    await websocket.send_json(
+                        {"type": "error", "message": "Invalid JSON payload."}
+                    )
+                    continue
+
+                msg_type = data.get("type")
+
+                if msg_type == "config":
+                    sample_rate_raw = data.get(
+                        "sample_rate", streaming_service.target_sample_rate
+                    )
+                    try:
+                        sample_rate = int(sample_rate_raw)
+                    except (TypeError, ValueError):
+                        sample_rate = streaming_service.target_sample_rate
+
+                    config = StreamingConfig(
+                        src_lang=str(data.get("src_lang", "eng")),
+                        tgt_lang=str(data.get("tgt_lang", "jpn")),
+                        sample_rate=sample_rate,
+                        return_text=bool(data.get("return_text", True)),
+                        return_streaming_audio=bool(data.get("streaming_audio", True)),
+                        return_expressive_audio=bool(
+                            data.get("expressive_audio", False)
+                        ),
+                    )
+
+                    try:
+                        if session is not None:
+                            await session.close()
+                        session = streaming_service.create_session(config)
+                    except StreamingServiceError as exc:
+                        await websocket.send_json(
+                            {"type": "error", "message": str(exc)}
+                        )
+                        session = None
+                        continue
+
+                    await websocket.send_json(
+                        {
+                            "type": "ready",
+                            "target_sample_rate": streaming_service.target_sample_rate,
+                            "expressive_available": streaming_service.expressive_available,
+                        }
+                    )
+
+                elif msg_type == "end":
+                    if session is not None:
+                        try:
+                            events = await session.finalize()
+                            for event in events:
+                                await websocket.send_json(event)
+                        finally:
+                            await session.close()
+                            session = None
+                    await websocket.send_json({"type": "done"})
+                    break
+
+                elif msg_type == "ping":
+                    await websocket.send_json({"type": "pong"})
+
+                else:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": f"Unknown message type: {msg_type}",
+                        }
+                    )
+
+            elif binary_payload is not None:
+                if session is None:
+                    await websocket.send_json(
+                        {
+                            "type": "error",
+                            "message": "Send a config message before streaming audio.",
+                        }
+                    )
+                    continue
+
+                try:
+                    events = await session.process_chunk(binary_payload)
+                except StreamingServiceError as exc:
+                    await websocket.send_json({"type": "error", "message": str(exc)})
+                    continue
+
+                for event in events:
+                    await websocket.send_json(event)
+
+    except WebSocketDisconnect:
+        pass
+    except Exception as exc:  # pragma: no cover - defensive logging
+        logger.exception("Unhandled websocket error: %s", exc)
+        try:
+            await websocket.send_json({"type": "error", "message": str(exc)})
+        except RuntimeError:
+            pass
+    finally:
+        if session is not None:
+            await session.close()
 
 
 if __name__ == "__main__":

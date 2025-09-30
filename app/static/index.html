@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Seamless Streaming デモ</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: "Segoe UI", system-ui, sans-serif;
+        background-color: #101418;
+        color: #f1f5f9;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        display: flex;
+        justify-content: center;
+        min-height: 100vh;
+      }
+
+      main {
+        width: min(960px, 92vw);
+        padding: 24px;
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      header h1 {
+        margin: 0;
+        font-size: clamp(1.6rem, 2.8vw, 2.4rem);
+        letter-spacing: 0.04em;
+      }
+
+      header p {
+        margin: 4px 0 0;
+        color: #94a3b8;
+        line-height: 1.5;
+      }
+
+      section {
+        background: rgba(15, 23, 42, 0.65);
+        border: 1px solid rgba(148, 163, 184, 0.12);
+        border-radius: 14px;
+        padding: 20px;
+        backdrop-filter: blur(12px);
+        box-shadow: 0 10px 30px rgba(15, 23, 42, 0.35);
+      }
+
+      h2 {
+        margin-top: 0;
+        font-size: 1.2rem;
+        letter-spacing: 0.04em;
+      }
+
+      fieldset {
+        border: none;
+        margin: 0;
+        padding: 0;
+        display: grid;
+        gap: 12px;
+      }
+
+      label {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        font-weight: 600;
+        color: #e2e8f0;
+      }
+
+      select,
+      input[type="checkbox"] {
+        font-size: 1rem;
+      }
+
+      select {
+        padding: 8px 10px;
+        border-radius: 8px;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        background: rgba(15, 23, 42, 0.66);
+        color: inherit;
+      }
+
+      .checkbox-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        min-width: 120px;
+        padding: 12px 18px;
+        border-radius: 999px;
+        border: none;
+        font-weight: 600;
+        font-size: 1rem;
+        cursor: pointer;
+        transition: transform 0.18s ease, box-shadow 0.18s ease;
+        background: linear-gradient(135deg, #6366f1, #0ea5e9);
+        color: #f8fafc;
+        box-shadow: 0 10px 25px rgba(79, 70, 229, 0.35);
+      }
+
+      button.secondary {
+        background: rgba(148, 163, 184, 0.2);
+        box-shadow: none;
+      }
+
+      button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+        box-shadow: none;
+      }
+
+      button:hover:not(:disabled) {
+        transform: translateY(-1px);
+        box-shadow: 0 16px 32px rgba(79, 70, 229, 0.5);
+      }
+
+      #status {
+        font-size: 0.95rem;
+        color: #38bdf8;
+      }
+
+      #status.error {
+        color: #f87171;
+      }
+
+      .transcript {
+        min-height: 84px;
+        font-size: 1.15rem;
+        line-height: 1.6;
+        color: #f8fafc;
+      }
+
+      .transcript span.partial {
+        opacity: 0.75;
+      }
+
+      .history {
+        margin-top: 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 0.95rem;
+        color: #94a3b8;
+      }
+
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      .chip {
+        padding: 4px 10px;
+        border-radius: 999px;
+        background: rgba(59, 130, 246, 0.18);
+        color: #bae6fd;
+        font-size: 0.85rem;
+      }
+
+      @media (max-width: 640px) {
+        fieldset {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <h1>Seamless Streaming 音声通訳デモ</h1>
+        <p>
+          SeamlessStreaming と SeamlessExpressive を使って、ブラウザから FastAPI
+          へ音声を WebSocket
+          経由で送信し、リアルタイム通訳と音声合成を行います。
+        </p>
+      </header>
+
+      <section>
+        <h2>設定</h2>
+        <fieldset>
+          <label>
+            入力言語
+            <select id="srcLang">
+              <option value="eng">英語 (eng)</option>
+              <option value="jpn">日本語 (jpn)</option>
+              <option value="cmn">北京語 (cmn)</option>
+              <option value="spa">スペイン語 (spa)</option>
+              <option value="fra">フランス語 (fra)</option>
+            </select>
+          </label>
+          <label>
+            出力言語
+            <select id="tgtLang">
+              <option value="jpn">日本語 (jpn)</option>
+              <option value="eng" selected>英語 (eng)</option>
+              <option value="cmn">北京語 (cmn)</option>
+              <option value="spa">スペイン語 (spa)</option>
+              <option value="fra">フランス語 (fra)</option>
+            </select>
+          </label>
+          <div class="checkbox-row">
+            <input type="checkbox" id="returnText" checked />
+            <label for="returnText">リアルタイム文字起こし</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="returnStreamingAudio" checked />
+            <label for="returnStreamingAudio">リアルタイム音声ストリーム</label>
+          </div>
+          <div class="checkbox-row">
+            <input type="checkbox" id="returnExpressive" />
+            <label for="returnExpressive"
+              >SeamlessExpressive 音声 (要 gated モデル)</label
+            >
+          </div>
+          <div class="controls">
+            <button id="startBtn">開始</button>
+            <button id="stopBtn" class="secondary" disabled>停止</button>
+          </div>
+          <div id="status">待機中…</div>
+        </fieldset>
+      </section>
+
+      <section>
+        <h2>文字起こし</h2>
+        <div class="transcript">
+          <span id="partialTranscript" class="partial"
+            >--- 現在の発話がここに表示されます ---</span
+          >
+        </div>
+        <div id="transcriptHistory" class="history"></div>
+      </section>
+
+      <section>
+        <h2>ステータス</h2>
+        <div class="chip-row">
+          <div class="chip" id="streamingChip">Streaming: idle</div>
+          <div class="chip" id="expressiveChip">Expressive: disabled</div>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const state = {
+        ws: null,
+        audioContext: null,
+        stream: null,
+        processor: null,
+        monitorGain: null,
+        streamingGain: null,
+        expressiveGain: null,
+        isStreaming: false,
+        streamingPlayhead: 0,
+        expressivePlayhead: 0,
+        expressiveRequested: false,
+      };
+
+      const statusEl = document.getElementById("status");
+      const partialEl = document.getElementById("partialTranscript");
+      const historyEl = document.getElementById("transcriptHistory");
+      const streamingChip = document.getElementById("streamingChip");
+      const expressiveChip = document.getElementById("expressiveChip");
+      const startBtn = document.getElementById("startBtn");
+      const stopBtn = document.getElementById("stopBtn");
+      const srcSelect = document.getElementById("srcLang");
+      const tgtSelect = document.getElementById("tgtLang");
+      const textCheckbox = document.getElementById("returnText");
+      const streamingCheckbox = document.getElementById("returnStreamingAudio");
+      const expressiveCheckbox = document.getElementById("returnExpressive");
+
+      function setStatus(message, isError = false) {
+        statusEl.textContent = message;
+        statusEl.classList.toggle("error", isError);
+      }
+
+      function appendHistory(text) {
+        const entry = document.createElement("div");
+        entry.textContent = text;
+        historyEl.prepend(entry);
+      }
+
+      function resetTranscript() {
+        partialEl.textContent = "--- 現在の発話がここに表示されます ---";
+      }
+
+      function floatToPCM16Buffer(float32Array) {
+        const buffer = new ArrayBuffer(float32Array.length * 2);
+        const view = new DataView(buffer);
+        for (let i = 0; i < float32Array.length; i += 1) {
+          let sample = float32Array[i];
+          sample = Math.max(-1, Math.min(1, sample));
+          view.setInt16(
+            i * 2,
+            sample < 0 ? sample * 0x8000 : sample * 0x7fff,
+            true
+          );
+        }
+        return buffer;
+      }
+
+      function base64ToInt16(base64) {
+        const binary = atob(base64);
+        const len = binary.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i += 1) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        return new Int16Array(bytes.buffer);
+      }
+
+      function schedulePlayback(int16Array, sampleRate, kind) {
+        if (!state.audioContext) return;
+        const floatArray = new Float32Array(int16Array.length);
+        for (let i = 0; i < int16Array.length; i += 1) {
+          floatArray[i] = int16Array[i] / 32768;
+        }
+        const buffer = state.audioContext.createBuffer(
+          1,
+          floatArray.length,
+          sampleRate
+        );
+        buffer.getChannelData(0).set(floatArray);
+        const source = state.audioContext.createBufferSource();
+        source.buffer = buffer;
+
+        const now = state.audioContext.currentTime;
+        if (kind === "expressive" && state.expressiveGain) {
+          const startTime = Math.max(now, state.expressivePlayhead);
+          source.connect(state.expressiveGain);
+          source.start(startTime);
+          state.expressivePlayhead = startTime + buffer.duration;
+          expressiveChip.textContent = `Expressive: playing (${sampleRate} Hz)`;
+        } else if (state.streamingGain) {
+          const startTime = Math.max(now, state.streamingPlayhead);
+          source.connect(state.streamingGain);
+          source.start(startTime);
+          state.streamingPlayhead = startTime + buffer.duration;
+          streamingChip.textContent = `Streaming: playing (${sampleRate} Hz)`;
+        }
+      }
+
+      function closeWebSocket() {
+        if (state.ws) {
+          try {
+            state.ws.close(1000, "Client closing");
+          } catch (err) {
+            console.warn(err);
+          }
+          state.ws = null;
+        }
+      }
+
+      async function teardownAudio() {
+        if (state.processor && state.monitorGain) {
+          state.processor.disconnect();
+          state.monitorGain.disconnect();
+        }
+        if (state.streamingGain) state.streamingGain.disconnect();
+        if (state.expressiveGain) state.expressiveGain.disconnect();
+        if (state.stream) {
+          state.stream.getTracks().forEach((track) => track.stop());
+          state.stream = null;
+        }
+        if (state.audioContext) {
+          await state.audioContext.close();
+          state.audioContext = null;
+        }
+        state.processor = null;
+        state.monitorGain = null;
+        state.streamingGain = null;
+        state.expressiveGain = null;
+        state.streamingPlayhead = 0;
+        state.expressivePlayhead = 0;
+      }
+
+      function setupProcessor(audioContext, sourceNode) {
+        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const monitorGain = audioContext.createGain();
+        monitorGain.gain.setValueAtTime(0, audioContext.currentTime);
+
+        processor.onaudioprocess = (event) => {
+          if (
+            !state.isStreaming ||
+            !state.ws ||
+            state.ws.readyState !== WebSocket.OPEN
+          ) {
+            return;
+          }
+          const input = event.inputBuffer.getChannelData(0);
+          const buffer = floatToPCM16Buffer(input);
+          state.ws.send(buffer);
+        };
+
+        sourceNode.connect(processor);
+        processor.connect(monitorGain);
+        monitorGain.connect(audioContext.destination);
+
+        state.processor = processor;
+        state.monitorGain = monitorGain;
+      }
+
+      async function initAudioPipeline() {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true,
+          video: false,
+        });
+        const audioContext = new AudioContext({ latencyHint: "interactive" });
+        await audioContext.resume();
+
+        const source = audioContext.createMediaStreamSource(stream);
+
+        state.audioContext = audioContext;
+        state.stream = stream;
+        setupProcessor(audioContext, source);
+
+        state.streamingGain = audioContext.createGain();
+        state.streamingGain.connect(audioContext.destination);
+        state.streamingGain.gain.setValueAtTime(1, audioContext.currentTime);
+
+        state.expressiveGain = audioContext.createGain();
+        state.expressiveGain.connect(audioContext.destination);
+        state.expressiveGain.gain.setValueAtTime(1, audioContext.currentTime);
+
+        return audioContext.sampleRate;
+      }
+
+      function buildConfig(sampleRate) {
+        return {
+          type: "config",
+          src_lang: srcSelect.value,
+          tgt_lang: tgtSelect.value,
+          sample_rate: sampleRate,
+          return_text: textCheckbox.checked,
+          streaming_audio: streamingCheckbox.checked,
+          expressive_audio: expressiveCheckbox.checked,
+        };
+      }
+
+      function handleMessage(event) {
+        if (typeof event.data !== "string") {
+          console.warn("Unexpected binary message from server");
+          return;
+        }
+        const payload = JSON.parse(event.data);
+        switch (payload.type) {
+          case "ready":
+            setStatus("サーバー準備完了。話し始めてください。");
+            streamingChip.textContent = `Streaming: ready (→ ${tgtSelect.value})`;
+            if (payload.expressive_available) {
+              expressiveChip.textContent = expressiveCheckbox.checked
+                ? "Expressive: enabled"
+                : "Expressive: available";
+            } else {
+              expressiveCheckbox.checked = false;
+              expressiveChip.textContent = "Expressive: unavailable";
+            }
+            break;
+          case "partial_text":
+            if (!textCheckbox.checked) break;
+            if (payload.final) {
+              appendHistory(payload.text);
+              resetTranscript();
+            } else {
+              partialEl.textContent = payload.text;
+            }
+            break;
+          case "streaming_audio":
+            if (!streamingCheckbox.checked) break;
+            if (payload.audio_base64) {
+              const int16 = base64ToInt16(payload.audio_base64);
+              schedulePlayback(
+                int16,
+                payload.sample_rate || state.audioContext.sampleRate,
+                "streaming"
+              );
+            }
+            break;
+          case "expressive_audio":
+            if (!expressiveCheckbox.checked) break;
+            if (payload.audio_base64) {
+              const expressiveData = base64ToInt16(payload.audio_base64);
+              schedulePlayback(
+                expressiveData,
+                payload.sample_rate || state.audioContext.sampleRate,
+                "expressive"
+              );
+            }
+            break;
+          case "done":
+            setStatus("セッションを終了しました。");
+            streamingChip.textContent = "Streaming: idle";
+            expressiveChip.textContent = expressiveCheckbox.checked
+              ? "Expressive: idle"
+              : "Expressive: disabled";
+            break;
+          case "error":
+            setStatus(payload.message || "エラーが発生しました", true);
+            break;
+          case "pong":
+            // optional heartbeat
+            break;
+          default:
+            console.warn("Unknown payload", payload);
+        }
+      }
+
+      async function startStreaming() {
+        if (state.isStreaming) return;
+        setStatus("オーディオ初期化中…");
+
+        try {
+          const sampleRate = await initAudioPipeline();
+          const wsUrl = `${
+            window.location.protocol === "https:" ? "wss" : "ws"
+          }://${window.location.host}/ws/translate`;
+          state.ws = new WebSocket(wsUrl);
+
+          state.ws.onopen = () => {
+            state.isStreaming = true;
+            const config = buildConfig(sampleRate);
+            state.ws.send(JSON.stringify(config));
+            setStatus("サーバー接続中…");
+          };
+
+          state.ws.onmessage = handleMessage;
+          state.ws.onerror = (event) => {
+            console.error(event);
+            setStatus("WebSocket エラーが発生しました", true);
+          };
+
+          state.ws.onclose = () => {
+            state.isStreaming = false;
+            streamingChip.textContent = "Streaming: idle";
+            expressiveChip.textContent = expressiveCheckbox.checked
+              ? "Expressive: idle"
+              : "Expressive: disabled";
+            stopBtn.disabled = true;
+            startBtn.disabled = false;
+            teardownAudio();
+          };
+
+          startBtn.disabled = true;
+          stopBtn.disabled = false;
+          resetTranscript();
+          historyEl.innerHTML = "";
+        } catch (error) {
+          console.error(error);
+          setStatus("初期化に失敗しました: " + error.message, true);
+          await teardownAudio();
+          closeWebSocket();
+        }
+      }
+
+      async function stopStreaming() {
+        if (!state.isStreaming) {
+          await teardownAudio();
+          closeWebSocket();
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+          return;
+        }
+
+        state.isStreaming = false;
+        setStatus("停止処理中…");
+        try {
+          if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+            state.ws.send(JSON.stringify({ type: "end" }));
+          }
+        } catch (err) {
+          console.warn(err);
+        } finally {
+          await teardownAudio();
+          closeWebSocket();
+          setStatus("停止しました。再度開始できます。");
+          startBtn.disabled = false;
+          stopBtn.disabled = true;
+        }
+      }
+
+      startBtn.addEventListener("click", () => startStreaming());
+      stopBtn.addEventListener("click", () => stopStreaming());
+
+      window.addEventListener("beforeunload", () => {
+        if (state.isStreaming && state.ws?.readyState === WebSocket.OPEN) {
+          state.ws.send(JSON.stringify({ type: "end" }));
+        }
+        closeWebSocket();
+      });
+    </script>
+  </body>
+</html>
